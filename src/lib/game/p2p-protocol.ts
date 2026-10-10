@@ -1,42 +1,17 @@
-/** Wire messages between host engine and guest phones over WebRTC reliable channel. */
+/** Wire messages between host turn-engine and guest phones over WebRTC. */
 
-import type {
-  AbilityVisibility,
-  CluePublic,
-  PrivateNote,
-  RoomSnapshot,
-} from "@/lib/campaign/types";
+import type { TurnSnapshot, ActionIntent } from "./turn-types";
 
 export type GuestToHost =
   | { t: "hello"; clientId: string; displayName?: string }
   | { t: "claim"; clientId: string; characterId: string | null }
   | { t: "start"; clientId: string }
-  | { t: "council"; clientId: string; on: boolean }
-  | { t: "choose"; clientId: string; choiceId: string }
-  | { t: "ability"; clientId: string; abilityId: string }
-  | { t: "speak"; clientId: string; text: string }
-  | {
-      t: "register";
-      clientId: string;
-      room3: string;
-      room5: string;
-      room7: string;
-      hiddenSeen: boolean;
-    }
-  | { t: "closePuzzle"; clientId: string }
+  | { t: "intent"; clientId: string; intent: ActionIntent }
+  | { t: "clearIntent"; clientId: string }
   | { t: "ping" };
 
 export type HostToGuest =
-  | { t: "snapshot"; room: RoomSnapshot }
-  | {
-      t: "abilityResult";
-      ok: boolean;
-      visibility?: AbilityVisibility;
-      note?: Pick<PrivateNote, "title" | "body">;
-      error?: string;
-      publicEvent?: string;
-      clue?: CluePublic;
-    }
+  | { t: "snapshot"; room: TurnSnapshot }
   | { t: "actionResult"; ok: boolean; error?: string }
   | { t: "hostGone" };
 

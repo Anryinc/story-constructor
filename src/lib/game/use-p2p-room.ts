@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RoomSnapshot } from "@/lib/campaign/types";
 import { P2PRoom, type PeerInfo } from "@/lib/multiplayer/p2p";
 import { getClientId } from "./client-id";
-import { HostEngine, type AbilityOutcome } from "./host-engine";
 import { makeRoomCode } from "./ids";
 import {
   parseGuestMessage,
@@ -10,20 +8,21 @@ import {
   type GuestToHost,
   type HostToGuest,
 } from "./p2p-protocol";
+import { TurnEngine } from "./turn-engine";
+import type { ActionIntent, TurnSnapshot } from "./turn-types";
 
 function useClientIdStable() {
   return useMemo(() => getClientId(), []);
 }
 
-/** Host tab: owns HostEngine, fans out personalized snapshots over WebRTC. */
 export function useHostRoom(code: string | undefined, projectId = "cherwood") {
   const clientId = useClientIdStable();
-  const engineRef = useRef<HostEngine | null>(null);
+  const engineRef = useRef<TurnEngine | null>(null);
   const p2pRef = useRef<P2PRoom | null>(null);
   const peerMapRef = useRef<Map<string, string>>(new Map());
-  const [room, setRoom] = useState<RoomSnapshot | null>(null);
+  const [room, setRoom] = useState<TurnSnapshot | null>(null);
   const [peers, setPeers] = useState<PeerInfo[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
 
   const pushAll = useCallback(() => {
@@ -35,7 +34,10 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
     for (const peer of p2p.peerList()) {
       if (peer.connectionState !== "connected") continue;
       const guestId = peerMapRef.current.get(peer.id) ?? peer.id;
-      const msg: HostToGuest = { t: "snapshot", room: engine.snapshotFor(guestId) };
+      const msg: HostToGuest = {
+        t: "snapshot",
+        room: engine.snapshotFor(guestId),
+      };
       p2p.send(msg, peer.id);
     }
   }, [clientId]);
@@ -43,10 +45,9 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
   useEffect(() => {
     if (!code || clientId === "ssr") return;
     const upper = code.toUpperCase();
-    const engine = new HostEngine(upper, clientId, projectId);
+    const engine = new TurnEngine(upper, clientId, projectId);
     engineRef.current = engine;
     setRoom(engine.snapshotFor(clientId));
-
     const unsub = engine.subscribe(() => pushAll());
 
     const p2p = new P2PRoom({
@@ -71,11 +72,10 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
       if (msg.t === "hello") {
         peerMapRef.current.set(peerId, msg.clientId);
         eng.ensureSeat(msg.clientId, msg.displayName ?? "Игрок");
-        const snap: HostToGuest = {
-          t: "snapshot",
-          room: eng.snapshotFor(msg.clientId),
-        };
-        p2pRef.current?.send(snap, peerId);
+        p2pRef.current?.send(
+          { t: "snapshot", room: eng.snapshotFor(msg.clientId) },
+          peerId,
+        );
         return;
       }
 
@@ -84,69 +84,32 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
       if (!client) return;
       peerMapRef.current.set(peerId, client);
 
-      let actionResult: HostToGuest | null = null;
-
+      let result: HostToGuest | null = null;
       switch (msg.t) {
         case "claim": {
           const r = eng.claim(client, msg.characterId);
-          actionResult = { t: "actionResult", ok: r.ok, error: r.error };
+          result = { t: "actionResult", ok: r.ok, error: r.error };
           break;
         }
         case "start": {
           const r = eng.start(client);
-          actionResult = { t: "actionResult", ok: r.ok, error: r.error };
+          result = { t: "actionResult", ok: r.ok, error: r.error };
           break;
         }
-        case "council": {
-          eng.setCouncil(msg.on);
-          actionResult = { t: "actionResult", ok: true };
+        case "intent": {
+          const r = eng.submitIntent(client, msg.intent);
+          result = { t: "actionResult", ok: r.ok, error: r.error };
           break;
         }
-        case "choose": {
-          const r = eng.choose(client, msg.choiceId);
-          actionResult = { t: "actionResult", ok: r.ok, error: r.error };
-          break;
-        }
-        case "ability": {
-          const r = eng.ability(client, msg.abilityId);
-          const out: HostToGuest = {
-            t: "abilityResult",
-            ok: r.ok,
-            visibility: r.visibility,
-            note: r.note,
-            error: r.error,
-            publicEvent: r.publicEvent,
-            clue: r.clue,
-          };
-          p2pRef.current?.send(out, peerId);
-          pushAll();
-          return;
-        }
-        case "speak": {
-          const r = eng.speak(client, msg.text);
-          actionResult = { t: "actionResult", ok: r.ok, error: r.error };
-          break;
-        }
-        case "register": {
-          const r = eng.register(client, {
-            room3: msg.room3,
-            room5: msg.room5,
-            room7: msg.room7,
-            hiddenSeen: msg.hiddenSeen,
-          });
-          actionResult = { t: "actionResult", ok: r.ok, error: r.error };
-          break;
-        }
-        case "closePuzzle": {
-          eng.closePuzzle();
-          actionResult = { t: "actionResult", ok: true };
+        case "clearIntent": {
+          eng.clearIntent(client);
+          result = { t: "actionResult", ok: true };
           break;
         }
         default:
           break;
       }
-
-      if (actionResult) p2pRef.current?.send(actionResult, peerId);
+      if (result) p2pRef.current?.send(result, peerId);
       pushAll();
     }
 
@@ -161,7 +124,7 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
   const claim = useCallback(
     (characterId: string | null) => {
       const r = engineRef.current?.claim(clientId, characterId) ?? {
-        ok: false,
+        ok: false as const,
         error: "Нет стола",
       };
       pushAll();
@@ -171,24 +134,18 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
   );
 
   const start = useCallback(() => {
-    const r = engineRef.current?.start(clientId) ?? { ok: false, error: "Нет стола" };
+    const r = engineRef.current?.start(clientId) ?? {
+      ok: false as const,
+      error: "Нет стола",
+    };
     pushAll();
     return r;
   }, [clientId, pushAll]);
 
-  const council = useCallback(
-    (on: boolean) => {
-      engineRef.current?.setCouncil(on);
-      pushAll();
-      return { ok: true as const };
-    },
-    [pushAll],
-  );
-
-  const choose = useCallback(
-    (choiceId: string) => {
-      const r = engineRef.current?.choose(clientId, choiceId) ?? {
-        ok: false,
+  const submitIntent = useCallback(
+    (intent: ActionIntent) => {
+      const r = engineRef.current?.submitIntent(clientId, intent) ?? {
+        ok: false as const,
         error: "Нет стола",
       };
       pushAll();
@@ -197,40 +154,11 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
     [clientId, pushAll],
   );
 
-  const ability = useCallback(
-    (abilityId: string): AbilityOutcome => {
-      const r = engineRef.current?.ability(clientId, abilityId) ?? {
-        ok: false,
-        error: "Нет стола",
-      };
-      pushAll();
-      return r;
-    },
-    [clientId, pushAll],
-  );
-
-  const register = useCallback(
-    (payload: {
-      room3: string;
-      room5: string;
-      room7: string;
-      hiddenSeen: boolean;
-    }) => {
-      const r = engineRef.current?.register(clientId, payload) ?? {
-        ok: false,
-        error: "Нет стола",
-      };
-      pushAll();
-      return r;
-    },
-    [clientId, pushAll],
-  );
-
-  const dismissPuzzle = useCallback(() => {
-    engineRef.current?.closePuzzle();
+  const clearIntent = useCallback(() => {
+    engineRef.current?.clearIntent(clientId);
     pushAll();
     return { ok: true as const };
-  }, [pushAll]);
+  }, [clientId, pushAll]);
 
   return {
     clientId,
@@ -241,35 +169,25 @@ export function useHostRoom(code: string | undefined, projectId = "cherwood") {
     ready,
     claim,
     start,
-    council,
-    choose,
-    ability,
-    register,
-    dismissPuzzle,
+    submitIntent,
+    clearIntent,
   };
 }
 
-/** Phone tab: joins host mesh, applies remote snapshots. */
 export function useGuestRoom(code: string | undefined) {
   const clientId = useClientIdStable();
   const p2pRef = useRef<P2PRoom | null>(null);
   const hostPeerRef = useRef<string | null>(null);
-  const [room, setRoom] = useState<RoomSnapshot | null>(null);
+  const [room, setRoom] = useState<TurnSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastActionError, setLastActionError] = useState<string | null>(null);
-  const [lastAbility, setLastAbility] = useState<AbilityOutcome | null>(null);
-  const pendingAbility = useRef<{
-    resolve: (v: AbilityOutcome) => void;
-  } | null>(null);
 
   const send = useCallback((msg: GuestToHost) => {
     const p2p = p2pRef.current;
     const host = hostPeerRef.current;
-    if (!p2p || !host) {
-      p2p?.send(msg);
-      return;
-    }
-    p2p.send(msg, host);
+    if (!p2p) return;
+    if (host) p2p.send(msg, host);
+    else p2p.send(msg);
   }, []);
 
   useEffect(() => {
@@ -297,20 +215,7 @@ export function useGuestRoom(code: string | undefined) {
           setRoom(msg.room);
           setError(null);
         } else if (msg.t === "actionResult") {
-          if (!msg.ok) setLastActionError(msg.error ?? "Ошибка");
-          else setLastActionError(null);
-        } else if (msg.t === "abilityResult") {
-          const out: AbilityOutcome = {
-            ok: msg.ok,
-            visibility: msg.visibility,
-            note: msg.note,
-            error: msg.error,
-            publicEvent: msg.publicEvent,
-            clue: msg.clue,
-          };
-          setLastAbility(out);
-          pendingAbility.current?.resolve(out);
-          pendingAbility.current = null;
+          setLastActionError(msg.ok ? null : (msg.error ?? "Ошибка"));
         } else if (msg.t === "hostGone") {
           setError("Хост закрыл стол");
         }
@@ -346,64 +251,16 @@ export function useGuestRoom(code: string | undefined) {
     [clientId, send],
   );
 
-  const council = useCallback(
-    (on: boolean) => {
-      send({ t: "council", clientId, on });
+  const submitIntent = useCallback(
+    (intent: ActionIntent) => {
+      send({ t: "intent", clientId, intent });
       return { ok: true as const };
     },
     [clientId, send],
   );
 
-  const choose = useCallback(
-    (choiceId: string) => {
-      send({ t: "choose", clientId, choiceId });
-      return { ok: true as const };
-    },
-    [clientId, send],
-  );
-
-  const ability = useCallback(
-    (abilityId: string) => {
-      return new Promise<AbilityOutcome>((resolve) => {
-        pendingAbility.current = { resolve };
-        send({ t: "ability", clientId, abilityId });
-        setTimeout(() => {
-          if (pendingAbility.current) {
-            pendingAbility.current.resolve({
-              ok: false,
-              error: "Нет ответа от хоста",
-            });
-            pendingAbility.current = null;
-          }
-        }, 8000);
-      });
-    },
-    [clientId, send],
-  );
-
-  const speak = useCallback(
-    (text: string) => {
-      send({ t: "speak", clientId, text });
-      return { ok: true as const };
-    },
-    [clientId, send],
-  );
-
-  const register = useCallback(
-    (payload: {
-      room3: string;
-      room5: string;
-      room7: string;
-      hiddenSeen: boolean;
-    }) => {
-      send({ t: "register", clientId, ...payload });
-      return { ok: true as const };
-    },
-    [clientId, send],
-  );
-
-  const dismissPuzzle = useCallback(() => {
-    send({ t: "closePuzzle", clientId });
+  const clearIntent = useCallback(() => {
+    send({ t: "clearIntent", clientId });
     return { ok: true as const };
   }, [clientId, send]);
 
@@ -413,14 +270,9 @@ export function useGuestRoom(code: string | undefined) {
     error,
     isLoading: !room && !error,
     lastActionError,
-    lastAbility,
     claim,
-    council,
-    choose,
-    ability,
-    speak,
-    register,
-    dismissPuzzle,
+    submitIntent,
+    clearIntent,
   };
 }
 
