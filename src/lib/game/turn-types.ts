@@ -50,23 +50,18 @@ export type TurnSnapshot = {
   myCharacterId: string | null;
   takenCharacterIds: string[];
   seatedCount: number;
-  /** Where I am */
   myLocationId: string | null;
   myLocationName: string | null;
   myLocationImage: string | null;
-  /** Who is here with me (names only) */
   hereWith: string[];
   availableActions: ActionOption[];
   myIntent: ActionIntent | null;
   intentsReady: number;
   intentsNeeded: number;
-  /** Personal clue basket */
   myClues: CluePublic[];
   myNotes: PrivateNote[];
   myJournal: JournalEntry[];
-  /** Hub board — last shares (visible on PC) */
   shareBoard: SharePayload[];
-  /** Last resolution blurb for me */
   lastResult: string | null;
   lastPublicEvent: string | null;
 };

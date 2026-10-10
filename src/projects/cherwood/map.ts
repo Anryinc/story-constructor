@@ -1,13 +1,10 @@
-/** Spatial graph + inspect targets for Cherwood (P1, until full node graph). */
+/** Spatial graph + inspect targets for Cherwood (P1). */
 
 export type InspectTarget = {
   id: string;
   label: string;
-  /** Private text after inspect */
   result: string;
-  /** Optional clue granted to inspector only */
   clue?: { id: string; title: string; body: string; source: string };
-  /** Once per player */
   once?: boolean;
 };
 
@@ -28,7 +25,7 @@ export const CHERWOOD_MAP: Record<string, LocationNode> = {
         id: "fog_sign",
         label: "Вывеска пансиона",
         result:
-          «Серебряная чайка» качается на ржавой цепи. Буквы съел туман, но снизу свежий мел: «Комнат нет. Спрашивайте Хэтти».",
+          "«Серебряная чайка» качается на ржавой цепи. Буквы съел туман, но снизу свежий мел: «Комнат нет. Спрашивайте Хэтти».",
         once: true,
       },
       {
@@ -84,7 +81,8 @@ export const CHERWOOD_MAP: Record<string, LocationNode> = {
       {
         id: "door_marks",
         label: "Царапины на косяке",
-        result: "У комнаты 7 косяк исчерчен изнутри. Кто-то считал ночи — или ждал сигнала.",
+        result:
+          "У комнаты 7 косяк исчерчен изнутри. Кто-то считал ночи — или ждал сигнала.",
         clue: {
           id: "door7_marks",
           title: "Царапины у комнаты 7",
@@ -115,7 +113,8 @@ export const CHERWOOD_MAP: Record<string, LocationNode> = {
       {
         id: "window",
         label: "Окно во двор",
-        result: "Со двора на стекле — отпечаток ладони снаружи, слишком высоко для прохожего.",
+        result:
+          "Со двора на стекле — отпечаток ладони снаружи, слишком высоко для прохожего.",
         once: true,
       },
     ],
