@@ -1,74 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { GraphCanvas } from "@/components/studio/graph-canvas";
-import {
-  cherwoodSeedGraph,
-  emptyGraph,
-  type StudioGraph,
-} from "@/lib/studio/graph-types";
+import { validateGraph } from "@/lib/graph/runtime";
 import { getProject } from "@/projects/registry";
-import { useCallback, useEffect, useState } from "react";
 
 export const Route = createFileRoute("/studio/$projectId")({
   component: StudioProject,
 });
 
-function storageKey(id: string) {
-  return `studio.graph.${id}`;
-}
-
-function loadGraph(projectId: string): StudioGraph {
-  if (typeof window === "undefined") {
-    return projectId === "cherwood" ? cherwoodSeedGraph() : emptyGraph();
-  }
-  try {
-    const raw = localStorage.getItem(storageKey(projectId));
-    if (raw) return JSON.parse(raw) as StudioGraph;
-  } catch {
-    /* ignore */
-  }
-  return projectId === "cherwood" ? cherwoodSeedGraph() : emptyGraph();
-}
-
 function StudioProject() {
   const { projectId } = Route.useParams();
   const project = getProject(projectId);
-  const [graph, setGraph] = useState<StudioGraph>(() => loadGraph(projectId));
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-
-  useEffect(() => {
-    setGraph(loadGraph(projectId));
-  }, [projectId]);
-
-  const persist = useCallback(
-    (g: StudioGraph) => {
-      setGraph(g);
-      try {
-        localStorage.setItem(storageKey(projectId), JSON.stringify(g));
-        setSavedAt(new Date().toLocaleTimeString("ru-RU"));
-      } catch {
-        /* quota */
-      }
-    },
-    [projectId],
-  );
-
-  const exportJson = () => {
-    const blob = new Blob([JSON.stringify(graph, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${projectId}-graph.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const resetSeed = () => {
-    if (!confirm("Сбросить граф к сиду Червуда?")) return;
-    const g = projectId === "cherwood" ? cherwoodSeedGraph() : emptyGraph();
-    persist(g);
-  };
 
   if (!project) {
     return (
@@ -82,53 +22,105 @@ function StudioProject() {
   }
 
   const m = project.manifest;
+  const graph = project.graph;
+  const locIds = Object.keys(graph.locations);
+  const inspectCount = locIds.reduce(
+    (n, id) => n + graph.locations[id]!.inspect.length,
+    0,
+  );
+  const npcCount = locIds.reduce(
+    (n, id) => n + (graph.locations[id]!.npcs?.length ?? 0),
+    0,
+  );
+  const errors = validateGraph(graph);
 
   return (
-    <main className="flex min-h-dvh flex-col bg-bg text-ink">
-      <header className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-2">
+    <main className="min-h-dvh bg-bg px-5 py-8 text-ink">
+      <div className="mx-auto max-w-3xl">
         <Link
           to="/studio"
-          className="text-xs uppercase tracking-[0.16em] text-muted hover:text-paper"
+          className="text-xs uppercase tracking-[0.18em] text-muted"
         >
           ← Мастерская
         </Link>
-        <h1 className="font-display text-xl text-paper">{m.title}</h1>
-        <span className="text-[10px] text-faint">{projectId}</span>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {savedAt ? (
-            <span className="text-[10px] text-faint">локально {savedAt}</span>
-          ) : null}
-          <button
-            type="button"
-            onClick={exportJson}
-            className="rounded-full border border-line px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-muted hover:text-paper"
-          >
-            Export JSON
-          </button>
-          <button
-            type="button"
-            onClick={resetSeed}
-            className="rounded-full border border-line px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-muted hover:text-paper"
-          >
-            Reset seed
-          </button>
+        <h1 className="mt-4 font-display text-4xl text-paper">{m.title}</h1>
+        <p className="mt-1 text-xs text-faint">
+          id: {m.id} · v{m.version} · start: {graph.startLocationId}
+        </p>
+
+        <section className="mt-8 grid gap-3 sm:grid-cols-3">
+          <Stat label="Локации" value={String(locIds.length)} />
+          <Stat label="Осмотры" value={String(inspectCount)} />
+          <Stat label="NPC" value={String(npcCount)} />
+        </section>
+
+        <section className="mt-6 rounded-[18px] border border-line p-4">
+          <h2 className="text-xs uppercase tracking-[0.18em] text-brass">
+            Локации графа
+          </h2>
+          <ul className="mt-3 space-y-2 text-sm text-muted">
+            {locIds.map((id) => {
+              const loc = graph.locations[id]!;
+              return (
+                <li key={id}>
+                  <span className="text-paper">{loc.name ?? id}</span>
+                  <span className="text-faint">
+                    {" "}
+                    · выходов {loc.exits.length} · осмотров {loc.inspect.length}{" "}
+                    · NPC {loc.npcs?.length ?? 0}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+
+        {errors.length > 0 ? (
+          <section className="mt-4 rounded-[18px] border border-danger/40 p-4 text-sm text-danger">
+            <p className="font-medium">Ошибки графа</p>
+            <ul className="mt-2 list-disc pl-5">
+              {errors.map((e) => (
+                <li key={e}>{e}</li>
+              ))}
+            </ul>
+          </section>
+        ) : (
+          <p className="mt-4 text-xs text-faint">validateGraph: ok</p>
+        )}
+
+        <section className="mt-6 rounded-[18px] border border-dashed border-line p-4 text-sm text-muted">
+          <p className="font-medium text-paper">P3 — node canvas</p>
+          <p className="mt-2 text-xs leading-relaxed text-faint">
+            Канон: <code>src/projects/{m.id}/graph.ts</code>. Правки через git.
+            Визуальный редактор нод — следующий этап.
+          </p>
+        </section>
+
+        <div className="mt-8 flex flex-wrap gap-3">
           <Link
             to="/project/$projectId"
-            params={{ projectId }}
-            className="rounded-full bg-paper px-3 py-1 text-[11px] uppercase tracking-[0.14em] text-bg"
+            params={{ projectId: m.id }}
+            className="rounded-[14px] bg-paper px-4 py-2 text-sm text-bg"
           >
-            Играть
+            Карточка проекта
+          </Link>
+          <Link
+            to="/"
+            className="rounded-[14px] border border-line px-4 py-2 text-sm text-paper"
+          >
+            Хаб
           </Link>
         </div>
-      </header>
-      <div className="flex-1 p-2">
-        <GraphCanvas graph={graph} onChange={persist} />
       </div>
-      <p className="px-4 pb-2 text-[10px] text-faint">
-        Канон в git: после правок — Export JSON и закоммитьте в{" "}
-        <code className="text-muted">src/projects/{projectId}/</code>. Пока
-        автосейв только в localStorage браузера.
-      </p>
     </main>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[16px] border border-line px-4 py-3">
+      <p className="text-[10px] uppercase tracking-[0.16em] text-faint">{label}</p>
+      <p className="mt-1 font-display text-xl text-paper">{value}</p>
+    </div>
   );
 }
