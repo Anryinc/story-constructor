@@ -1,15 +1,19 @@
 /**
- * Host-authoritative turn-based table (P1).
- * Personal locations, 1 action/round, share same-location clues.
+ * Host-authoritative turn table.
+ * Content from project.graph (P2); personal locations; 1 action/round.
  */
 
-import { LOCATION_BY_ID } from "@/lib/campaign/locations";
 import { MAX_PARTY, ROSTER_BY_ID } from "@/lib/campaign/roster";
 import type { CluePublic, PrivateNote, SeatPublic } from "@/lib/campaign/types";
 import {
-  CHERWOOD_MAP,
-  CHERWOOD_START_LOCATION,
-} from "@/projects/cherwood/map";
+  availableExits,
+  availableInspect,
+  availableNpcs,
+  availableTalkOptions,
+  locationDisplayName,
+  locationImage,
+} from "@/lib/graph/runtime";
+import type { GraphDocument } from "@/lib/graph/types";
 import { getProject } from "@/projects/registry";
 import { newId } from "./ids";
 import type {
@@ -35,6 +39,8 @@ function intentKey(intent: ActionIntent): string {
       return `move:${intent.toLocationId}`;
     case "inspect":
       return `inspect:${intent.targetId}`;
+    case "talk":
+      return `talk:${intent.npcId}:${intent.optionId}`;
     case "share":
       return `share:${intent.clueId}`;
     case "ability":
@@ -47,14 +53,17 @@ export class TurnEngine {
   readonly hostClientId: string;
   readonly projectId: string;
   private projectTitle: string;
+  private graph: GraphDocument;
   private phase: TurnPhase = "lobby";
   private round = 0;
   private seats: Seat[] = [];
+  private flags: Record<string, boolean> = {};
   private locationOf = new Map<string, string>();
   private cluesOf = new Map<string, CluePublic[]>();
   private notesOf = new Map<string, PrivateNote[]>();
   private journalOf = new Map<string, JournalEntry[]>();
-  private inspected = new Map<string, Set<string>>(); // clientId -> target ids
+  private inspected = new Map<string, Set<string>>();
+  private talkUsed = new Map<string, Set<string>>();
   private intents = new Map<string, ActionIntent>();
   private lastResultOf = new Map<string, string>();
   private shareBoard: SharePayload[] = [];
@@ -66,7 +75,11 @@ export class TurnEngine {
     this.hostClientId = hostClientId;
     this.projectId = projectId;
     const p = getProject(projectId);
-    this.projectTitle = p?.manifest.title ?? projectId;
+    if (!p?.graph) {
+      throw new Error(`Project ${projectId} has no graph`);
+    }
+    this.graph = p.graph;
+    this.projectTitle = p.manifest.title;
     this.seats.push({
       clientId: hostClientId,
       displayName: "Хост",
@@ -85,6 +98,11 @@ export class TurnEngine {
 
   private playersWithRoles() {
     return this.seats.filter((s) => s.characterId);
+  }
+
+  private setFlags(list?: string[]) {
+    if (!list) return;
+    for (const f of list) this.flags[f] = true;
   }
 
   ensureSeat(clientId: string, displayName = "Игрок") {
@@ -133,16 +151,19 @@ export class TurnEngine {
     if (players.length === 0) {
       return { ok: false as const, error: "Нужна хотя бы одна роль" };
     }
+    const start = this.graph.startLocationId;
     for (const s of players) {
-      this.locationOf.set(s.clientId, CHERWOOD_START_LOCATION);
+      this.locationOf.set(s.clientId, start);
       this.cluesOf.set(s.clientId, []);
       this.journalOf.set(s.clientId, []);
       this.inspected.set(s.clientId, new Set());
+      this.talkUsed.set(s.clientId, new Set());
     }
+    this.flags = {};
     this.round = 1;
     this.phase = "planning";
     this.intents.clear();
-    this.lastPublicEvent = "Дело открыто. Первый раунд — планируйте ход.";
+    this.lastPublicEvent = "Дело открыто. Первый раунд.";
     this.emit();
     return { ok: true as const };
   }
@@ -179,22 +200,21 @@ export class TurnEngine {
     this.phase = "resolution";
     const players = this.playersWithRoles();
 
-    // 1) moves first
     for (const s of players) {
       const intent = this.intents.get(s.clientId);
       if (intent?.type === "move") {
         const loc = this.locationOf.get(s.clientId);
-        const node = loc ? CHERWOOD_MAP[loc] : null;
-        if (node?.exits.includes(intent.toLocationId)) {
+        if (!loc) continue;
+        const exits = availableExits(this.graph, loc, this.flags);
+        if (exits.some((e) => e.to === intent.toLocationId)) {
           this.locationOf.set(s.clientId, intent.toLocationId);
-          const name = LOCATION_BY_ID[intent.toLocationId]?.name ?? intent.toLocationId;
+          const name = locationDisplayName(this.graph, intent.toLocationId);
           this.pushJournal(s.clientId, "Перемещение", `Вы перешли: ${name}.`);
           this.lastResultOf.set(s.clientId, `Вы в локации: ${name}`);
         }
       }
     }
 
-    // 2) inspect / ability / wait / share
     for (const s of players) {
       const intent = this.intents.get(s.clientId);
       if (!intent || intent.type === "move") continue;
@@ -204,17 +224,18 @@ export class TurnEngine {
         this.lastResultOf.set(s.clientId, "Вы ждали.");
         continue;
       }
-
       if (intent.type === "inspect") {
         this.resolveInspect(s.clientId, intent.targetId);
         continue;
       }
-
+      if (intent.type === "talk") {
+        this.resolveTalk(s.clientId, intent.npcId, intent.optionId);
+        continue;
+      }
       if (intent.type === "share") {
         this.resolveShare(s.clientId, intent.clueId);
         continue;
       }
-
       if (intent.type === "ability") {
         this.resolveAbility(s.clientId, intent.abilityId);
       }
@@ -229,31 +250,46 @@ export class TurnEngine {
 
   private resolveInspect(clientId: string, targetId: string) {
     const loc = this.locationOf.get(clientId);
-    const node = loc ? CHERWOOD_MAP[loc] : null;
-    const target = node?.inspect.find((t) => t.id === targetId);
+    if (!loc) return;
+    const seen = this.inspected.get(clientId) ?? new Set();
+    const list = availableInspect(this.graph, loc, this.flags, seen);
+    const target = list.find((t) => t.id === targetId);
     if (!target) {
       this.lastResultOf.set(clientId, "Осматривать нечего.");
       return;
     }
-    const seen = this.inspected.get(clientId) ?? new Set();
-    if (target.once && seen.has(target.id)) {
-      this.lastResultOf.set(clientId, "Вы уже это осматривали.");
-      return;
-    }
     seen.add(target.id);
     this.inspected.set(clientId, seen);
-
+    this.setFlags(target.setFlags);
     this.pushJournal(clientId, target.label, target.result);
     this.lastResultOf.set(clientId, target.result);
+    if (target.clue) this.addClue(clientId, target.clue);
+  }
 
-    if (target.clue) {
-      this.addClue(clientId, {
-        id: target.clue.id,
-        title: target.clue.title,
-        body: target.clue.body,
-        source: target.clue.source,
-      });
+  private resolveTalk(clientId: string, npcId: string, optionId: string) {
+    const loc = this.locationOf.get(clientId);
+    if (!loc) return;
+    const npcs = availableNpcs(this.graph, loc, this.flags);
+    const npc = npcs.find((n) => n.id === npcId);
+    if (!npc) {
+      this.lastResultOf.set(clientId, "Собеседника нет.");
+      return;
     }
+    const used = this.talkUsed.get(clientId) ?? new Set();
+    const opts = availableTalkOptions(npc, this.flags, used);
+    const opt = opts.find((o) => o.id === optionId);
+    if (!opt) {
+      this.lastResultOf.set(clientId, "Реплика недоступна.");
+      return;
+    }
+    used.add(`${npc.id}:${opt.id}`);
+    this.talkUsed.set(clientId, used);
+    this.setFlags(opt.setFlags);
+    const body = npc.intro ? `${npc.intro}\n\n${opt.reply}` : opt.reply;
+    this.pushJournal(clientId, `${npc.name}: ${opt.label}`, opt.reply);
+    this.lastResultOf.set(clientId, opt.reply);
+    if (opt.clue) this.addClue(clientId, opt.clue);
+    void body;
   }
 
   private resolveShare(clientId: string, clueId: string) {
@@ -263,25 +299,26 @@ export class TurnEngine {
       this.lastResultOf.set(clientId, "Нет такой улики.");
       return;
     }
-    const loc = this.locationOf.get(clientId) ?? "street";
-    const locName = LOCATION_BY_ID[loc]?.name ?? loc;
+    const loc = this.locationOf.get(clientId) ?? this.graph.startLocationId;
+    const locName = locationDisplayName(this.graph, loc);
     const seat = this.seats.find((s) => s.clientId === clientId);
     const fromName = seat?.displayName ?? "Игрок";
 
-    const payload: SharePayload = {
-      id: newId(),
-      fromPlayerId: clientId,
-      fromName,
-      locationId: loc,
-      locationName: locName,
-      title: clue.title,
-      body: clue.body,
-      round: this.round,
-      createdAt: new Date().toISOString(),
-    };
-    this.shareBoard = [payload, ...this.shareBoard].slice(0, 12);
+    this.shareBoard = [
+      {
+        id: newId(),
+        fromPlayerId: clientId,
+        fromName,
+        locationId: loc,
+        locationName: locName,
+        title: clue.title,
+        body: clue.body,
+        round: this.round,
+        createdAt: new Date().toISOString(),
+      },
+      ...this.shareBoard,
+    ].slice(0, 12);
 
-    // same-location only into baskets
     for (const s of this.playersWithRoles()) {
       if (this.locationOf.get(s.clientId) !== loc) continue;
       this.addClue(s.clientId, clue);
@@ -295,7 +332,10 @@ export class TurnEngine {
     }
 
     this.pushJournal(clientId, "На общий экран", `Вы показали: «${clue.title}».`);
-    this.lastResultOf.set(clientId, `Показано всем в «${locName}»: ${clue.title}`);
+    this.lastResultOf.set(
+      clientId,
+      `Показано всем в «${locName}»: ${clue.title}`,
+    );
     this.lastPublicEvent = `${fromName} → ${locName}: ${clue.title}`;
   }
 
@@ -307,21 +347,18 @@ export class TurnEngine {
       this.lastResultOf.set(clientId, "Способность недоступна.");
       return;
     }
-    const title = ab.name;
-    const body = `${ab.detail}\n\n(${ab.summary})`;
     const list = this.notesOf.get(clientId) ?? [];
     list.unshift({
       id: newId(),
-      title,
-      body,
+      title: ab.name,
+      body: `${ab.detail}\n\n(${ab.summary})`,
       createdAt: new Date().toISOString(),
     });
     this.notesOf.set(clientId, list.slice(0, 20));
-    this.pushJournal(clientId, title, body);
-    this.lastResultOf.set(clientId, `Способность «${title}»: ${ab.summary}`);
-
+    this.pushJournal(clientId, ab.name, ab.detail);
+    this.lastResultOf.set(clientId, `Способность «${ab.name}»: ${ab.summary}`);
     if (ab.visibility === "public") {
-      this.lastPublicEvent = `${ch.name} применяет «${title}».`;
+      this.lastPublicEvent = `${ch.name} применяет «${ab.name}».`;
     }
   }
 
@@ -349,25 +386,21 @@ export class TurnEngine {
     if (!seat?.characterId) return [];
     const loc = this.locationOf.get(clientId);
     if (!loc) return [];
-    const node = CHERWOOD_MAP[loc];
-    if (!node) return [];
 
     const opts: ActionOption[] = [
       { id: "wait", intent: { type: "wait" }, label: "Ничего не делать" },
     ];
 
-    for (const exit of node.exits) {
-      const name = LOCATION_BY_ID[exit]?.name ?? exit;
+    for (const e of availableExits(this.graph, loc, this.flags)) {
       opts.push({
-        id: `move:${exit}`,
-        intent: { type: "move", toLocationId: exit },
-        label: `Идти: ${name}`,
+        id: `move:${e.to}`,
+        intent: { type: "move", toLocationId: e.to },
+        label: `Идти: ${e.label}`,
       });
     }
 
     const seen = this.inspected.get(clientId) ?? new Set();
-    for (const t of node.inspect) {
-      if (t.once && seen.has(t.id)) continue;
+    for (const t of availableInspect(this.graph, loc, this.flags, seen)) {
       opts.push({
         id: `inspect:${t.id}`,
         intent: { type: "inspect", targetId: t.id },
@@ -375,8 +408,19 @@ export class TurnEngine {
       });
     }
 
-    const bag = this.cluesOf.get(clientId) ?? [];
-    for (const c of bag) {
+    const talkUsed = this.talkUsed.get(clientId) ?? new Set();
+    for (const npc of availableNpcs(this.graph, loc, this.flags)) {
+      for (const o of availableTalkOptions(npc, this.flags, talkUsed)) {
+        opts.push({
+          id: `talk:${npc.id}:${o.id}`,
+          intent: { type: "talk", npcId: npc.id, optionId: o.id },
+          label: `${npc.name}: ${o.label}`,
+          detail: npc.intro,
+        });
+      }
+    }
+
+    for (const c of this.cluesOf.get(clientId) ?? []) {
       opts.push({
         id: `share:${c.id}`,
         intent: { type: "share", clueId: c.id },
@@ -401,7 +445,6 @@ export class TurnEngine {
   snapshotFor(clientId: string): TurnSnapshot {
     const seat = this.seats.find((s) => s.clientId === clientId);
     const loc = this.locationOf.get(clientId) ?? null;
-    const locDef = loc ? LOCATION_BY_ID[loc] : null;
     const players = this.playersWithRoles();
     const hereWith = players
       .filter(
@@ -409,6 +452,14 @@ export class TurnEngine {
           s.clientId !== clientId && this.locationOf.get(s.clientId) === loc,
       )
       .map((s) => s.displayName);
+
+    const hereNpcs = loc
+      ? availableNpcs(this.graph, loc, this.flags).map((n) => ({
+          id: n.id,
+          name: n.name,
+          intro: n.intro,
+        }))
+      : [];
 
     const status =
       this.phase === "lobby"
@@ -439,8 +490,9 @@ export class TurnEngine {
         .filter((id): id is string => Boolean(id)),
       seatedCount: players.length,
       myLocationId: loc,
-      myLocationName: locDef?.name ?? null,
-      myLocationImage: locDef?.image ?? null,
+      myLocationName: loc ? locationDisplayName(this.graph, loc) : null,
+      myLocationImage: loc ? locationImage(loc) : null,
+      hereNpcs,
       hereWith,
       availableActions: this.actionsFor(clientId),
       myIntent: this.intents.get(clientId) ?? null,

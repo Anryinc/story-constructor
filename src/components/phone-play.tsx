@@ -79,6 +79,17 @@ export function PhonePlay({
         </div>
       </div>
 
+      {room.hereNpcs.length > 0 ? (
+        <div className="mx-4 mt-3 space-y-1">
+          {room.hereNpcs.map((n) => (
+            <p key={n.id} className="text-xs text-muted">
+              <span className="text-brass">{n.name}.</span>{" "}
+              {n.intro ?? "Здесь."}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
       {room.lastResult ? (
         <div className="mx-4 mt-3 rounded-[14px] border border-line bg-bg/80 px-3 py-2 text-sm text-muted">
           {room.lastResult}
@@ -149,7 +160,7 @@ export function PhonePlay({
         {tab === "clues" ? (
           <ul className="space-y-3">
             {room.myClues.length === 0 ? (
-              <p className="text-sm text-muted">Пока пусто. Осматривайте локации.</p>
+              <p className="text-sm text-muted">Пока пусто. Осматривайте и говорите.</p>
             ) : (
               room.myClues.map((c) => (
                 <li
@@ -206,6 +217,8 @@ function labelIntent(intent: ActionIntent, room: TurnSnapshot): string {
       return x.toLocationId === intent.toLocationId;
     if (x.type === "inspect" && intent.type === "inspect")
       return x.targetId === intent.targetId;
+    if (x.type === "talk" && intent.type === "talk")
+      return x.npcId === intent.npcId && x.optionId === intent.optionId;
     if (x.type === "share" && intent.type === "share")
       return x.clueId === intent.clueId;
     if (x.type === "ability" && intent.type === "ability")

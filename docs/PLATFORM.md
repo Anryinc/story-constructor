@@ -3,14 +3,14 @@
 ## Контент
 
 - Канон сценариев живёт **в git**: `src/projects/<id>/`.
-- Мастерская редактирует pack; сохранение в репозиторий (commit) — основной путь персистентности.
-- Export JSON — доп. бэкап, не единственный source of truth.
+- **Graph** (`graph.ts`): локации, выходы, осмотры, NPC и реплики — source of truth для P2+.
+- Мастерская (P3) будет редактировать graph и коммитить в репозиторий.
 
 ## Раунд
 
 - Без таймера: раунд, когда все сдали intent (включая «ничего не делать»).
 - 1 действие / игрок / раунд.
-- Share и способности **тратят** действие.
+- Share, способности и talk **тратят** действие.
 - Share: на хаб (ПК) можно вывести; **в корзину улик** — только игрокам в **той же локации**.
 
 ## Хост
@@ -18,9 +18,9 @@
 - ПК/ноут = хаб (`/table/$code`): QR, shared board, статус раунда.
 - Тот же человек может зайти с телефона как игрок (`/play/$code`).
 
-## Фазы поставки
+## Фазы
 
-- **P0** (этот коммит+): хаб, лендинг project, studio shell, cherwood в registry.
-- **P1**: пошаговый engine, move/wait/inspect, share same-location.
-- **P2**: graph runtime + миграция Червуда.
-- **P3**: node studio + commit workflow.
+- **P0** — хаб, лендинг, studio shell, registry.
+- **P1** — turn engine, move/wait/inspect/share.
+- **P2** (сейчас) — `GraphDocument` + runtime, Червуд на графе, talk.
+- **P3** — node studio canvas + commit workflow.
