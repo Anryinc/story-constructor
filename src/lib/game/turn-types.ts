@@ -6,6 +6,7 @@ export type ActionIntent =
   | { type: "wait" }
   | { type: "move"; toLocationId: string }
   | { type: "inspect"; targetId: string }
+  | { type: "talk"; npcId: string; optionId: string }
   | { type: "share"; clueId: string }
   | { type: "ability"; abilityId: string };
 
@@ -36,7 +37,6 @@ export type JournalEntry = {
   createdAt: string;
 };
 
-/** Personalized view for one client (phone or hub). */
 export type TurnSnapshot = {
   mode: "turn";
   code: string;
@@ -53,6 +53,8 @@ export type TurnSnapshot = {
   myLocationId: string | null;
   myLocationName: string | null;
   myLocationImage: string | null;
+  /** NPC intros visible in this location */
+  hereNpcs: { id: string; name: string; intro?: string }[];
   hereWith: string[];
   availableActions: ActionOption[];
   myIntent: ActionIntent | null;

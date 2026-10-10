@@ -9,9 +9,7 @@ export const cherwoodGraph: GraphDocument = {
     street: {
       id: "street",
       name: "Улица Железных ворот",
-      exits: [
-        { to: "parlor", label: "В пансион «Серебряная чайка»" },
-      ],
+      exits: [{ to: "parlor", label: "В пансион «Серебряная чайка»" }],
       inspect: [
         {
           id: "fog_sign",
@@ -136,10 +134,9 @@ export const cherwoodGraph: GraphDocument = {
               id: "ask_boarders",
               label: "Спросить про жильцов",
               once: true,
-              setFlags: ["heard_boarders"],
+              setFlags: ["heard_boarders", "heard_hattie_basement"],
               reply:
                 "«Жильцы у меня: мистер Восс, мистер Пелл и мистер Миллс — он на фабрике до темноты. Больше никто. Трезвость? Благотворительная встреча в пятницу, внизу, чай без рома. Церковь Ночи уже спрашивала. Я сказала: алкоголь. Они обрадовались, что не их юрисдикция.» На словах «внизу» она крепче стискивает ключи.",
-              setFlags: ["heard_boarders", "heard_hattie_basement"],
             },
             {
               id: "ask_voss",
