@@ -1,6 +1,17 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { GraphCanvas } from "@/components/studio/graph-canvas";
 import { validateGraph } from "@/lib/graph/runtime";
+import type { GraphDocument } from "@/lib/graph/types";
+import {
+  downloadText,
+  graphDocumentToStudio,
+  graphToTsModule,
+  studioToGraphDocument,
+} from "@/lib/studio/bridge";
+import { clearDraft, loadDraft, saveDraft } from "@/lib/studio/draft";
+import type { StudioGraph } from "@/lib/studio/graph-types";
 import { getProject } from "@/projects/registry";
+import { useCallback, useMemo, useState } from "react";
 
 export const Route = createFileRoute("/studio/$projectId")({
   component: StudioProject,
@@ -21,106 +32,193 @@ function StudioProject() {
     );
   }
 
-  const m = project.manifest;
-  const graph = project.graph;
-  const locIds = Object.keys(graph.locations);
-  const inspectCount = locIds.reduce(
-    (n, id) => n + graph.locations[id]!.inspect.length,
-    0,
+  return <StudioWorkspace projectId={projectId} canonical={project.graph} title={project.manifest.title} />;
+}
+
+function StudioWorkspace({
+  projectId,
+  canonical,
+  title,
+}: {
+  projectId: string;
+  canonical: GraphDocument;
+  title: string;
+}) {
+  const [doc, setDoc] = useState<GraphDocument>(() => loadDraft(projectId) ?? structuredClone(canonical));
+  const [studio, setStudio] = useState<StudioGraph>(() =>
+    graphDocumentToStudio(loadDraft(projectId) ?? canonical),
   );
-  const npcCount = locIds.reduce(
-    (n, id) => n + (graph.locations[id]!.npcs?.length ?? 0),
-    0,
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(doc, null, 2));
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [panel, setPanel] = useState<"canvas" | "json">("canvas");
+  const [dirty, setDirty] = useState(false);
+
+  const errors = useMemo(() => validateGraph(doc), [doc]);
+
+  const persist = useCallback(
+    (next: GraphDocument, nextStudio?: StudioGraph) => {
+      setDoc(next);
+      saveDraft(projectId, next);
+      setJsonText(JSON.stringify(next, null, 2));
+      setJsonError(null);
+      setDirty(true);
+      if (nextStudio) setStudio(nextStudio);
+      else setStudio(graphDocumentToStudio(next));
+    },
+    [projectId],
   );
-  const errors = validateGraph(graph);
+
+  const onStudioChange = (g: StudioGraph) => {
+    setStudio(g);
+    const merged = studioToGraphDocument(g, doc);
+    setDoc(merged);
+    saveDraft(projectId, merged);
+    setJsonText(JSON.stringify(merged, null, 2));
+    setDirty(true);
+  };
+
+  const applyJson = () => {
+    try {
+      const parsed = JSON.parse(jsonText) as GraphDocument;
+      if (!parsed.locations || !parsed.startLocationId) {
+        setJsonError("Нужны startLocationId и locations");
+        return;
+      }
+      persist(parsed);
+    } catch (e) {
+      setJsonError(e instanceof Error ? e.message : "JSON error");
+    }
+  };
+
+  const resetCanonical = () => {
+    clearDraft(projectId);
+    persist(structuredClone(canonical));
+    setDirty(false);
+  };
+
+  const exportJson = () => {
+    downloadText(`${projectId}-graph.json`, JSON.stringify(doc, null, 2));
+  };
+
+  const exportTs = () => {
+    const name = projectId === "cherwood" ? "cherwoodGraph" : `${projectId}Graph`;
+    downloadText(`graph.ts`, graphToTsModule(doc, name));
+  };
 
   return (
-    <main className="min-h-dvh bg-bg px-5 py-8 text-ink">
-      <div className="mx-auto max-w-3xl">
-        <Link
-          to="/studio"
-          className="text-xs uppercase tracking-[0.18em] text-muted"
-        >
+    <div className="flex min-h-dvh flex-col bg-bg text-ink">
+      <header className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+        <Link to="/studio" className="text-xs uppercase tracking-[0.16em] text-muted">
           ← Мастерская
         </Link>
-        <h1 className="mt-4 font-display text-4xl text-paper">{m.title}</h1>
-        <p className="mt-1 text-xs text-faint">
-          id: {m.id} · v{m.version} · start: {graph.startLocationId}
-        </p>
+        <h1 className="font-display text-xl text-paper">{title}</h1>
+        <span className="text-xs text-faint">{projectId}</span>
+        {dirty ? (
+          <span className="rounded-full bg-brass/20 px-2 py-0.5 text-[10px] uppercase tracking-wider text-brass">
+            черновик
+          </span>
+        ) : null}
+        <div className="ml-auto flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setPanel("canvas")}
+            className={`rounded-full px-3 py-1 text-xs ${panel === "canvas" ? "bg-paper text-bg" : "border border-line text-muted"}`}
+          >
+            Canvas
+          </button>
+          <button
+            type="button"
+            onClick={() => setPanel("json")}
+            className={`rounded-full px-3 py-1 text-xs ${panel === "json" ? "bg-paper text-bg" : "border border-line text-muted"}`}
+          >
+            JSON
+          </button>
+          <button
+            type="button"
+            onClick={exportJson}
+            className="rounded-full border border-line px-3 py-1 text-xs text-paper"
+          >
+            Export JSON
+          </button>
+          <button
+            type="button"
+            onClick={exportTs}
+            className="rounded-full border border-line px-3 py-1 text-xs text-paper"
+          >
+            Export graph.ts
+          </button>
+          <button
+            type="button"
+            onClick={resetCanonical}
+            className="rounded-full border border-line px-3 py-1 text-xs text-muted"
+          >
+            Сброс к git
+          </button>
+        </div>
+      </header>
 
-        <section className="mt-8 grid gap-3 sm:grid-cols-3">
-          <Stat label="Локации" value={String(locIds.length)} />
-          <Stat label="Осмотры" value={String(inspectCount)} />
-          <Stat label="NPC" value={String(npcCount)} />
-        </section>
+      {errors.length > 0 ? (
+        <div className="border-b border-danger/30 bg-danger/10 px-4 py-2 text-xs text-danger">
+          {errors.join(" · ")}
+        </div>
+      ) : (
+        <div className="border-b border-line px-4 py-1 text-[10px] text-faint">
+          validateGraph: ok · локаций {Object.keys(doc.locations).length} · start{" "}
+          {doc.startLocationId}
+        </div>
+      )}
 
-        <section className="mt-6 rounded-[18px] border border-line p-4">
-          <h2 className="text-xs uppercase tracking-[0.18em] text-brass">
-            Локации графа
-          </h2>
-          <ul className="mt-3 space-y-2 text-sm text-muted">
-            {locIds.map((id) => {
-              const loc = graph.locations[id]!;
-              return (
-                <li key={id}>
-                  <span className="text-paper">{loc.name ?? id}</span>
-                  <span className="text-faint">
-                    {" "}
-                    · выходов {loc.exits.length} · осмотров {loc.inspect.length}{" "}
-                    · NPC {loc.npcs?.length ?? 0}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <div className="min-h-[50vh] flex-1 lg:min-h-0">
+          {panel === "canvas" ? (
+            <GraphCanvas graph={studio} onChange={onStudioChange} />
+          ) : (
+            <div className="flex h-full min-h-[50vh] flex-col p-3">
+              <textarea
+                value={jsonText}
+                onChange={(e) => setJsonText(e.target.value)}
+                className="min-h-[40vh] flex-1 resize-none rounded-[14px] border border-line bg-bg/80 p-3 font-mono text-xs text-paper"
+                spellCheck={false}
+              />
+              {jsonError ? (
+                <p className="mt-2 text-sm text-danger">{jsonError}</p>
+              ) : null}
+              <button
+                type="button"
+                onClick={applyJson}
+                className="mt-2 h-10 rounded-[12px] bg-paper text-sm text-bg"
+              >
+                Применить JSON к черновику
+              </button>
+            </div>
+          )}
+        </div>
 
-        {errors.length > 0 ? (
-          <section className="mt-4 rounded-[18px] border border-danger/40 p-4 text-sm text-danger">
-            <p className="font-medium">Ошибки графа</p>
-            <ul className="mt-2 list-disc pl-5">
-              {errors.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
-          </section>
-        ) : (
-          <p className="mt-4 text-xs text-faint">validateGraph: ok</p>
-        )}
-
-        <section className="mt-6 rounded-[18px] border border-dashed border-line p-4 text-sm text-muted">
-          <p className="font-medium text-paper">P3 — node canvas</p>
-          <p className="mt-2 text-xs leading-relaxed text-faint">
-            Канон: <code>src/projects/{m.id}/graph.ts</code>. Правки через git.
-            Визуальный редактор нод — следующий этап.
+        <aside className="w-full border-t border-line p-4 lg:w-80 lg:border-l lg:border-t-0">
+          <h2 className="text-xs uppercase tracking-[0.18em] text-brass">Git</h2>
+          <p className="mt-2 text-xs leading-relaxed text-muted">
+            Канон в репозитории:{" "}
+            <code className="text-faint">src/projects/{projectId}/graph.ts</code>.
+            Черновик в этой вкладке (sessionStorage). Чтобы сохранить навсегда:
           </p>
-        </section>
-
-        <div className="mt-8 flex flex-wrap gap-3">
+          <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs text-muted">
+            <li>Export graph.ts</li>
+            <li>Замените файл в репо</li>
+            <li>git commit + push</li>
+          </ol>
+          <p className="mt-3 text-xs text-faint">
+            На canvas: тяните локации, соединяйте порты (выходы). Новые типы нод
+            (сцена/ветка) пока для раскладки; runtime читает GraphDocument.
+          </p>
           <Link
             to="/project/$projectId"
-            params={{ projectId: m.id }}
-            className="rounded-[14px] bg-paper px-4 py-2 text-sm text-bg"
+            params={{ projectId }}
+            className="mt-4 inline-block text-xs text-paper underline"
           >
             Карточка проекта
           </Link>
-          <Link
-            to="/"
-            className="rounded-[14px] border border-line px-4 py-2 text-sm text-paper"
-          >
-            Хаб
-          </Link>
-        </div>
+        </aside>
       </div>
-    </main>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[16px] border border-line px-4 py-3">
-      <p className="text-[10px] uppercase tracking-[0.16em] text-faint">{label}</p>
-      <p className="mt-1 font-display text-xl text-paper">{value}</p>
     </div>
   );
 }
