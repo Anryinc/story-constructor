@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { BUILD_STAMP } from "@/lib/build-stamp";
 import { listProjects } from "@/projects/registry";
 
 export const Route = createFileRoute("/")({ component: HubPage });
@@ -74,8 +75,7 @@ function HubPage() {
       </section>
 
       <footer className="mx-auto max-w-5xl px-5 pb-10 text-xs text-faint">
-        Сценарии хранятся в git (`src/projects/`). Сессия стола живёт во вкладке
-        хоста, пока она открыта.
+        Сценарии в git (`src/projects/`). Build: {BUILD_STAMP}
       </footer>
     </main>
   );

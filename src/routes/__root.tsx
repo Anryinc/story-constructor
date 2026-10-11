@@ -1,6 +1,7 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
 import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
+import { BUILD_STAMP } from "@/lib/build-stamp";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "Стол проектов";
@@ -16,7 +17,9 @@ export const Route = createRootRoute({
         content:
           "Платформа столов: сценарии в git, хаб на ПК, ходы на телефонах.",
       },
+      { property: "og:title", content: APP_NAME },
       { name: "theme-color", content: "#0c0b0a" },
+      { name: "x-build-stamp", content: BUILD_STAMP },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
