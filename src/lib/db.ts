@@ -8,21 +8,17 @@ const rawDatabaseUrl =
 const databaseUrl =
   rawDatabaseUrl && rawDatabaseUrl.trim() ? rawDatabaseUrl : undefined;
 
-/** Vercel/Lambda: no filesystem for PGLite WASM data file. */
-const isServerless =
-  typeof process !== "undefined" &&
-  (process.env.VERCEL === "1" ||
-    process.env.VERCEL === "true" ||
-    Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME));
-
 /**
  * Neon when DATABASE_URL is set.
- * PGLite only in local/dev (has writable FS).
- * On Vercel without DATABASE_URL → "none" (do not crash SSR with ENOENT).
+ * PGLite only outside production (local / vite dev).
+ * Production without DATABASE_URL → none (Vercel has no pglite.data FS).
+ *
+ * Do NOT rely on process.env.VERCEL alone — it can be stripped/inlined wrong
+ * in the Nitro server bundle; NODE_ENV=production is reliable on deploy.
  */
 export const dbSource: DbSource = databaseUrl
   ? "neon"
-  : isServerless
+  : process.env.NODE_ENV === "production" && process.env.FORCE_PGLITE !== "1"
     ? "none"
     : "pglite";
 
@@ -144,8 +140,8 @@ async function createSql(): Promise<Sql> {
   if (dbSource === "neon") return createNeonSql();
   if (dbSource === "pglite") return createPgliteSql();
   throw new Error(
-    "No database on this host. Set DATABASE_URL (Neon) on Vercel — " +
-      "PGLite cannot run in serverless (missing pglite.data).",
+    "No database configured. On Vercel set DATABASE_URL (Neon). " +
+      "PGLite is disabled in production (no pglite.data on serverless).",
   );
 }
 
@@ -172,6 +168,7 @@ export function ensureDbReady(): Promise<void> {
   return getSql().then(() => undefined);
 }
 
+// Eager PGLite only in non-production. Never on Vercel production.
 const globalBoot = globalThis as typeof globalThis & {
   __pgBootstrapPromise__?: Promise<void>;
 };
@@ -179,6 +176,5 @@ if (typeof window === "undefined" && dbSource === "pglite") {
   globalBoot.__pgBootstrapPromise__ ??= ensureDbReady().catch((err) => {
     globalBoot.__pgBootstrapPromise__ = undefined;
     console.error("[db] PGLite bootstrap failed:", err);
-    // Do not rethrow — avoid poisoning the whole serverless request.
   });
 }

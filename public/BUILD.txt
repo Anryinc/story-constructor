@@ -1,0 +1,4 @@
+story-constructor deploy probe
+commit-target: main
+stamp: v2026-10-11-probe-build-txt
+If you can read this on the live site, Vercel is serving current GitHub main.
